@@ -121,7 +121,7 @@ class SparseMatrix(object):
     def map_value(self, map_func):
         return self.__class__(self.index, map_func(self.value), self.shape)
 
-    def _reduce(self, segment_func, axis=-1, keepdims=False):
+    def _segment_reduce(self, reduce_func, axis=None, keepdims=False):
 
         # reduce by row
         if axis == -1 or axis == 1:
@@ -130,21 +130,40 @@ class SparseMatrix(object):
         elif axis == 0 or axis == -2:
             reduce_axis = 1
         else:
-            raise Exception("Invalid axis value: {}, axis shoud be -1, -2, 0, or 1".format(axis))
+            raise Exception("Invalid axis value: {}, axis shoud be -1, -2, 0, 1, or None".format(axis))
 
         reduce_index = self.index[reduce_axis]
         num_reduced = self.shape[reduce_axis]
 
-        reduced_edge_weight = segment_func(self.value, reduce_index, num_reduced)
+        output = reduce_func(self.value, reduce_index, num_reduced)
         if keepdims:
-            reduced_edge_weight = tf.expand_dims(reduced_edge_weight, axis=axis)
-        return reduced_edge_weight
+            output = tf.expand_dims(output, axis=axis)
 
-    def reduce_sum(self, axis=-1, keepdims=False):
-        return self._reduce(tf.math.unsorted_segment_sum, axis=axis, keepdims=keepdims)
+        return output
 
-    def reduce_min(self, axis=-1, keepdims=False):
-        return self._reduce(tf.math.unsorted_segment_min, axis=axis, keepdims=keepdims)
+    def reduce_sum(self, axis=None, keepdims=False):
+        reduce_func = tf.reduce_sum if axis is None else tf.math.unsorted_segment_sum
+        return self._segment_reduce(reduce_func, axis=axis, keepdims=keepdims)
+
+    def reduce_mean(self, axis=None, keepdims=False):
+        sum_output = self.reduce_sum(axis=axis, keepdims=keepdims)
+        if axis is None:
+            num = self.shape[0] * self.shape[1]
+        else:
+            num = self.shape[axis]
+
+        mean_output = sum_output / tf.cast(num, tf.float32)
+
+        return mean_output
+
+
+    def reduce_max(self, axis=None, keepdims=False):
+        sparse_tensor = self.to_sparse_tensor()
+        return tf.sparse.reduce_max(sparse_tensor, axis=axis, keepdims=keepdims)
+
+    def reduce_min(self, axis=None, keepdims=False):
+        return - self.negative().reduce_max(axis=axis, keepdims=keepdims)
+
 
     # https://stackoverflow.com/questions/45731484/tensorflow-how-to-perform-element-wise-multiplication-between-two-sparse-matrix
     def _mul_sparse_matrix(self, other):
