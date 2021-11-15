@@ -1,5 +1,24 @@
 # Byte-compiled / optimized / DLL files
+*.zip
+/test/
+/data/
+/demo/data/
+**/__pycache__/
+**/.idea/
 __pycache__/
+
+/doc/build/
+/docs/build/
+/logs/
+/models/
+/demo/logs/
+/demo/models/
+
+benchmarks/**/data/
+benchmarks/**/results.txt
+
+*.swp
+
 *.py[cod]
 *$py.class
 
