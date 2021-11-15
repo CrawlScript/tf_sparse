@@ -121,7 +121,7 @@ class SparseMatrix(object):
     def map_value(self, map_func):
         return self.__class__(self.index, map_func(self.value), self.shape)
 
-    def _segment_reduce(self, reduce_func, axis=None, keepdims=False):
+    def _segment_reduce(self, segment_func, axis=None, keepdims=False):
 
         # reduce by row
         if axis == -1 or axis == 1:
@@ -130,40 +130,45 @@ class SparseMatrix(object):
         elif axis == 0 or axis == -2:
             reduce_axis = 1
         else:
-            raise Exception("Invalid axis value: {}, axis shoud be -1, -2, 0, 1, or None".format(axis))
+            raise Exception("Invalid axis value: {}, axis shoud be -1, -2, 0, or 1".format(axis))
 
         reduce_index = self.index[reduce_axis]
         num_reduced = self.shape[reduce_axis]
 
-        output = reduce_func(self.value, reduce_index, num_reduced)
+        output = segment_func(self.value, reduce_index, num_reduced)
         if keepdims:
             output = tf.expand_dims(output, axis=axis)
 
         return output
 
-    def reduce_sum(self, axis=None, keepdims=False):
-        reduce_func = tf.reduce_sum if axis is None else tf.math.unsorted_segment_sum
-        return self._segment_reduce(reduce_func, axis=axis, keepdims=keepdims)
+    def segment_sum(self, axis=None, keepdims=False):
+        return self._segment_reduce(tf.math.unsorted_segment_sum, axis=axis, keepdims=keepdims)
 
-    def reduce_mean(self, axis=None, keepdims=False):
-        sum_output = self.reduce_sum(axis=axis, keepdims=keepdims)
-        if axis is None:
-            num = self.shape[0] * self.shape[1]
+    def segment_mean(self, axis=None, keepdims=False):
+        return self._segment_reduce(tf.math.unsorted_segment_mean, axis=axis, keepdims=keepdims)
+
+    def segment_max(self, axis=None, keepdims=False):
+        return self._segment_reduce(tf.math.unsorted_segment_max, axis=axis, keepdims=keepdims)
+
+    def segment_min(self, axis=None, keepdims=False):
+        return self._segment_reduce(tf.math.unsorted_segment_min, axis=axis, keepdims=keepdims)
+
+    def segment_softmax(self, axis=-1):
+
+        # reduce by row
+        if axis == -1 or axis == 1:
+            reduce_index = self.index[0]
+            num_reduced = self.shape[0]
+        # reduce by col
+        elif axis == 0 or axis == -2:
+            reduce_index = self.index[1]
+            num_reduced = self.shape[1]
         else:
-            num = self.shape[axis]
+            raise Exception("Invalid axis value: {}, axis shoud be -1, -2, 0, or 1".format(axis))
 
-        mean_output = sum_output / tf.cast(num, tf.float32)
+        normed_value = _segment_softmax(self.value, reduce_index, num_reduced)
 
-        return mean_output
-
-
-    def reduce_max(self, axis=None, keepdims=False):
-        sparse_tensor = self.to_sparse_tensor()
-        return tf.sparse.reduce_max(sparse_tensor, axis=axis, keepdims=keepdims)
-
-    def reduce_min(self, axis=None, keepdims=False):
-        return - self.negative().reduce_max(axis=axis, keepdims=keepdims)
-
+        return self.__class__(self.index, normed_value, shape=self.shape)
 
     # https://stackoverflow.com/questions/45731484/tensorflow-how-to-perform-element-wise-multiplication-between-two-sparse-matrix
     def _mul_sparse_matrix(self, other):
@@ -346,22 +351,7 @@ class SparseMatrix(object):
             edge_weight = self.value
         return self.__class__(self.index, value=edge_weight, shape=self.shape)
 
-    def softmax(self, axis=-1):
 
-        # reduce by row
-        if axis == -1 or axis == 1:
-            reduce_index = self.index[0]
-            num_reduced = self.shape[0]
-        # reduce by col
-        elif axis == 0 or axis == -2:
-            reduce_index = self.index[1]
-            num_reduced = self.shape[1]
-        else:
-            raise Exception("Invalid axis value: {}, axis shoud be -1, -2, 0, or 1".format(axis))
-
-        normed_value = _segment_softmax(self.value, reduce_index, num_reduced)
-
-        return self.__class__(self.index, normed_value, shape=self.shape)
 
     # def add_self_loop(self, fill_weight=1.0):
     #     num_nodes = self.shape[0]
