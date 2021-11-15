@@ -54,7 +54,7 @@ class SparseMatrix(object):
 
         if merge:
             self.index, [self.value] = merge_duplicated_sparse_index(self.index, [self.value],
-                                                             merge_modes=["sum"])
+                                                                     merge_modes=["sum"])
 
         if shape is None:
             if index_is_tensor:
@@ -65,26 +65,31 @@ class SparseMatrix(object):
         else:
             self.shape = shape
 
-
     @classmethod
     def cast_index(cls, index):
-        if isinstance(index, list):
-            index = np.array(index).astype(np.int32)
-        elif isinstance(index, np.ndarray):
-            index = index.astype(np.int32)
-        elif tf.is_tensor(index):
-            index = tf.cast(index, tf.int32)
+        index = tf.convert_to_tensor(index)
+        index = tf.cast(index, tf.int32)
         return index
+        # if isinstance(index, list):
+        #     index = np.array(index).astype(np.int32)
+        # elif isinstance(index, np.ndarray):
+        #     index = index.astype(np.int32)
+        # elif tf.is_tensor(index):
+        #     index = tf.cast(index, tf.int32)
 
     @classmethod
     def cast_value(cls, value):
-        if isinstance(value, list):
-            value = np.array(value).astype(np.float32)
-        elif isinstance(value, np.ndarray):
-            value = value.astype(np.float32)
-        elif tf.is_tensor(value):
-            value = tf.cast(value, tf.float32)
+        value = tf.convert_to_tensor(value)
+        value = tf.cast(value, dtype=tf.float32)
         return value
+
+        # if isinstance(value, list):
+        #     value = np.array(value).astype(np.float32)
+        # elif isinstance(value, np.ndarray):
+        #     value = value.astype(np.float32)
+        # elif tf.is_tensor(value):
+        #     value = tf.cast(value, tf.float32)
+        # return value
 
     @property
     def row(self):
@@ -97,7 +102,6 @@ class SparseMatrix(object):
     def merge_duplicated_index(self):
         edge_index, [edge_weight] = merge_duplicated_sparse_index(self.index, [self.value], merge_modes=["sum"])
         return self.__class__(edge_index, edge_weight, shape=self.shape)
-
 
     def negative(self):
         return self.__class__(
@@ -113,6 +117,9 @@ class SparseMatrix(object):
         row, col = self.index[0], self.index[1]
         transposed_edge_index = tf.stack([col, row], axis=0)
         return self.__class__(transposed_edge_index, value=self.value, shape=[self.shape[1], self.shape[0]])
+
+    def map_value(self, map_func):
+        return self.__class__(self.index, map_func(self.value), self.shape)
 
     def _reduce(self, segment_func, axis=-1, keepdims=False):
 
@@ -138,6 +145,39 @@ class SparseMatrix(object):
 
     def reduce_min(self, axis=-1, keepdims=False):
         return self._reduce(tf.math.unsorted_segment_min, axis=axis, keepdims=keepdims)
+
+    # https://stackoverflow.com/questions/45731484/tensorflow-how-to-perform-element-wise-multiplication-between-two-sparse-matrix
+    def _mul_sparse_matrix(self, other):
+        a, b = self, other
+        ab = ((a + b).map_value(tf.square) - a.map_value(tf.square) - b.map_value(tf.square)).map_value(
+            lambda x: x * 0.5)
+        return ab
+
+    def _rmul_sparse_matrix(self, other):
+        return self._mul_sparse_matrix(other)
+
+    def _mul_scalar(self, scalar):
+        return self.__class__(self.index, self.value * scalar, self.shape)
+
+    def _rmul_scalar(self, scalar):
+        return self._mul_scalar(scalar)
+
+    def _mul_dense(self, dense):
+        sparse_tensor = self.to_sparse_tensor()
+        return self.__class__.from_sparse_tensor(sparse_tensor * dense)
+
+    def __mul__(self, other):
+
+        if isinstance(other, SparseMatrix):
+            return self._mul_sparse_matrix(other)
+        # if is scalar
+        elif len(tf.shape(other)) == 0:
+            return self._mul_scalar(other)
+        elif tf.is_tensor(other) or isinstance(other, np.ndarray):
+            return self._mul_dense(other)
+
+    def __rmul__(self, other):
+        return self.__mul__(other)
 
     def _matmul_dense(self, h):
         row, col = self.index[0], self.index[1]
@@ -214,18 +254,18 @@ class SparseMatrix(object):
         return self.rmatmul_dense(h)
 
     def eliminate_zeros(self):
-        edge_index_is_tensor = tf.is_tensor(self.index)
-        edge_weight_is_tensor = tf.is_tensor(self.value)
+        # edge_index_is_tensor = tf.is_tensor(self.index)
+        # edge_weight_is_tensor = tf.is_tensor(self.value)
 
         mask = tf.not_equal(self.value, 0.0)
         masked_edge_index = tf.boolean_mask(self.index, mask, axis=1)
         masked_edge_weight = tf.boolean_mask(self.value, mask)
 
-        if not edge_index_is_tensor:
-            masked_edge_index = masked_edge_index.numpy()
-
-        if not edge_weight_is_tensor:
-            masked_edge_weight = masked_edge_weight.numpy()
+        # if not edge_index_is_tensor:
+        #     masked_edge_index = masked_edge_index.numpy()
+        #
+        # if not edge_weight_is_tensor:
+        #     masked_edge_weight = masked_edge_weight.numpy()
 
         return self.__class__(masked_edge_index, masked_edge_weight, shape=self.shape)
 
@@ -238,8 +278,8 @@ class SparseMatrix(object):
         :return:
         """
 
-        edge_index_is_tensor = tf.is_tensor(self.index)
-        edge_weight_is_tensor = tf.is_tensor(self.value)
+        # edge_index_is_tensor = tf.is_tensor(self.index)
+        # edge_weight_is_tensor = tf.is_tensor(self.value)
 
         combined_index = tf.concat([self.index, other.index], axis=1)
         combined_value = tf.concat([self.value, other.value], axis=0)
@@ -247,11 +287,11 @@ class SparseMatrix(object):
         merged_index, [merged_value] = merge_duplicated_sparse_index(
             combined_index, props=[combined_value], merge_modes=[merge_mode])
 
-        if tf.executing_eagerly() and not edge_index_is_tensor:
-            merged_index = merged_index.numpy()
-
-        if tf.executing_eagerly() and not edge_weight_is_tensor:
-            merged_value = merged_value.numpy()
+        # if tf.executing_eagerly() and not edge_index_is_tensor:
+        #     merged_index = merged_index.numpy()
+        #
+        # if tf.executing_eagerly() and not edge_weight_is_tensor:
+        #     merged_value = merged_value.numpy()
 
         output_class = self.__class__ if issubclass(self.__class__, other.__class__) else other.__class__
         merged_sparse_adj = output_class(merged_index, merged_value, shape=self.shape)
@@ -304,9 +344,6 @@ class SparseMatrix(object):
 
         return self.__class__(self.index, normed_value, shape=self.shape)
 
-
-
-
     # def add_self_loop(self, fill_weight=1.0):
     #     num_nodes = self.shape[0]
     #     updated_edge_index, updated_edge_weight = add_self_loop_edge(self.index, num_nodes,
@@ -347,7 +384,7 @@ class SparseMatrix(object):
         :return:
         """
         diagonals = tf.ones([num_rows], dtype=tf.float32)
-        return SparseMatrix.from_diagonals(diagonals)
+        return cls.from_diagonals(diagonals)
 
     @classmethod
     def from_sparse_tensor(cls, sparse_tensor: tf.sparse.SparseTensor):
