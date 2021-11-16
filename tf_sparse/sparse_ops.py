@@ -4,6 +4,24 @@ import tensorflow as tf
 from .sparse_matrix import SparseMatrix
 
 
+def shape(x, out_type=tf.int32):
+    if isinstance(x, SparseMatrix):
+        x_shape = x.shape_tensor
+        x_shape = tf.cast(x_shape, out_type)
+    else:
+        x_shape = tf.shape(x, out_type=out_type)
+    return x_shape
+
+
+def concat(items, axis):
+    if len(items) == 0:
+        return items
+    sparse_tensors = [item.to_sparse_tensor() for item in items]
+    output_sparse_tensor = tf.sparse.concat(axis, sparse_tensors)
+    sparse_matrix_class = items[0].__class__
+    return sparse_matrix_class.from_sparse_tensor(output_sparse_tensor)
+
+
 # sparse_adj @ diagonal_matrix
 def sparse_diag_matmul(sparse: SparseMatrix, diagonal):
     return sparse.matmul_diag(diagonal)

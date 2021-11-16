@@ -2,12 +2,19 @@
 
 import tensorflow as tf
 import numpy as np
+from tensorflow import SparseTensorSpec
+from tensorflow.python.framework import tensor_shape, tensor_util
+from tensorflow.python.framework.composite_tensor import CompositeTensor
+from tensorflow.python.framework.type_spec import BatchableTypeSpec, TypeSpec
+from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import tensor_spec
 
 from tensorflow.python.ops.linalg.sparse.sparse_csr_matrix_ops import sparse_tensor_to_csr_sparse_matrix, \
-    sparse_matrix_sparse_mat_mul, csr_sparse_matrix_to_sparse_tensor
+    sparse_matrix_sparse_mat_mul, csr_sparse_matrix_to_sparse_tensor, tf_export
 import warnings
 
 from tf_sparse.utils import merge_duplicated_sparse_index
+import numbers
 
 """
 Sparse Matrix for Computation
@@ -24,7 +31,58 @@ def _segment_softmax(data, segment_ids, num_segments):
     return score
 
 
-class SparseMatrix(object):
+# @tf_export("SparseTensorSpec")
+class SparseMatrixSpec(TypeSpec):
+    """Type specification for a `tf.sparse.SparseTensor`."""
+
+    __slots__ = ["_shape", "_dtype"]
+
+    value_type = property(lambda self: SparseMatrix)
+
+    def __init__(self, shape=None, dtype=dtypes.float32):
+        """Constructs a type specification for a `SparseMatrix`.
+
+        Args:
+          shape: The dense shape of the `tf_sparse.SparseMatrix`, or `None` to allow any dense
+            shape.
+          dtype: `tf.DType` of values in the `SparseMatrix`.
+        """
+        self._shape = tensor_shape.as_shape(shape)
+        self._dtype = dtypes.as_dtype(dtype)
+
+    def _serialize(self):
+        return (self._shape, self._dtype)
+
+    @property
+    def dtype(self):
+        """The `tf.dtypes.DType` specified by this type for the SparseTensor."""
+        return self._dtype
+
+    @property
+    def shape(self):
+        """The `tf.TensorShape` specified by this type for the SparseTensor."""
+        return self._shape
+
+    @property
+    def _component_specs(self):
+        rank = self._shape.ndims
+        num_values = None
+        return [
+            tensor_spec.TensorSpec([num_values, rank], dtypes.int64),
+            tensor_spec.TensorSpec([num_values], self._dtype),
+            tensor_spec.TensorSpec([rank], dtypes.int64)]
+
+    def _to_components(self, value):
+        return [value.index, value.value, tf.convert_to_tensor(value._shape)]
+
+    def _from_components(self, tensor_list):
+        return SparseMatrix(tensor_list[0], tensor_list[1], shape=tensor_list[2])
+
+
+class SparseMatrix(CompositeTensor):
+
+    is_tensor_like = True
+
     # https://stackoverflow.com/questions/40252765/overriding-other-rmul-with-your-classs-mul
     __array_priority__ = 10000
 
@@ -61,9 +119,27 @@ class SparseMatrix(object):
                 num_nodes = tf.reduce_max(index) + 1
             else:
                 num_nodes = np.max(index) + 1
-            self.shape = [num_nodes, num_nodes]
-        else:
-            self.shape = shape
+            shape = [num_nodes, num_nodes]
+
+        self._shape = tf.convert_to_tensor(shape)
+        self.shape = tensor_util.constant_value_as_shape(self._shape)
+
+    @property
+    def shape_tensor(self):
+        return self._shape
+
+    @property
+    def dtype(self):
+        return self.value.dtype
+
+    @property
+    def graph(self):
+        """The `Graph` that contains the index, value, and dense_shape tensors."""
+        return self.index.graph
+
+    @property
+    def _type_spec(self):
+        return SparseMatrixSpec(self.shape, self.dtype)
 
     @classmethod
     def cast_index(cls, index):
@@ -99,15 +175,21 @@ class SparseMatrix(object):
     def col(self):
         return self.index[1]
 
+    def __len__(self):
+        return self._shape[0]
+
+    def with_value(self, new_value):
+        return self.__class__(self.index, new_value, shape=self._shape)
+
     def merge_duplicated_index(self):
         edge_index, [edge_weight] = merge_duplicated_sparse_index(self.index, [self.value], merge_modes=["sum"])
-        return self.__class__(edge_index, edge_weight, shape=self.shape)
+        return self.__class__(edge_index, edge_weight, shape=self._shape)
 
     def negative(self):
         return self.__class__(
             index=self.index,
             value=-self.value,
-            shape=self.shape
+            shape=self._shape
         )
 
     def __neg__(self):
@@ -116,10 +198,10 @@ class SparseMatrix(object):
     def transpose(self):
         row, col = self.index[0], self.index[1]
         transposed_edge_index = tf.stack([col, row], axis=0)
-        return self.__class__(transposed_edge_index, value=self.value, shape=[self.shape[1], self.shape[0]])
+        return self.__class__(transposed_edge_index, value=self.value, shape=[self._shape[1], self._shape[0]])
 
     def map_value(self, map_func):
-        return self.__class__(self.index, map_func(self.value), self.shape)
+        return self.__class__(self.index, map_func(self.value), self._shape)
 
     def _segment_reduce(self, segment_func, axis=None, keepdims=False):
 
@@ -133,7 +215,7 @@ class SparseMatrix(object):
             raise Exception("Invalid axis value: {}, axis shoud be -1, -2, 0, or 1".format(axis))
 
         reduce_index = self.index[reduce_axis]
-        num_reduced = self.shape[reduce_axis]
+        num_reduced = self._shape[reduce_axis]
 
         output = segment_func(self.value, reduce_index, num_reduced)
         if keepdims:
@@ -158,17 +240,17 @@ class SparseMatrix(object):
         # reduce by row
         if axis == -1 or axis == 1:
             reduce_index = self.index[0]
-            num_reduced = self.shape[0]
+            num_reduced = self._shape[0]
         # reduce by col
         elif axis == 0 or axis == -2:
             reduce_index = self.index[1]
-            num_reduced = self.shape[1]
+            num_reduced = self._shape[1]
         else:
             raise Exception("Invalid axis value: {}, axis shoud be -1, -2, 0, or 1".format(axis))
 
         normed_value = _segment_softmax(self.value, reduce_index, num_reduced)
 
-        return self.__class__(self.index, normed_value, shape=self.shape)
+        return self.__class__(self.index, normed_value, shape=self._shape)
 
     # https://stackoverflow.com/questions/45731484/tensorflow-how-to-perform-element-wise-multiplication-between-two-sparse-matrix
     def _mul_sparse_matrix(self, other):
@@ -181,7 +263,7 @@ class SparseMatrix(object):
         return self._mul_sparse_matrix(other)
 
     def _mul_scalar(self, scalar):
-        return self.__class__(self.index, self.value * scalar, self.shape)
+        return self.__class__(self.index, self.value * scalar, self._shape)
 
     def _rmul_scalar(self, scalar):
         return self._mul_scalar(scalar)
@@ -194,11 +276,24 @@ class SparseMatrix(object):
 
         if isinstance(other, SparseMatrix):
             return self._mul_sparse_matrix(other)
+        elif isinstance(other, tf.sparse.SparseTensor):
+            return self._mul_sparse_matrix(self.__class__.from_sparse_tensor(other))
+        else:
+            if isinstance(other, numbers.Number) or len(other._shape) == 0:
+                return self._mul_scalar(other)
+            else:
+                return self._mul_dense(other)
+            # return tf.cond(
+            #     tf.rank(other) == 0,
+            #     lambda: self._mul_scalar(other),  # if other is scalar
+            #     lambda: self._mul_dense(other)  # if other is dense
+            # )
+
         # if is scalar
-        elif len(tf.shape(other)) == 0:
-            return self._mul_scalar(other)
-        elif tf.is_tensor(other) or isinstance(other, np.ndarray):
-            return self._mul_dense(other)
+        # elif tf.rank(other) == 0:
+        #     return self._mul_scalar(other)
+        # elif tf.is_tensor(other) or isinstance(other, np.ndarray):
+        #     return self._mul_dense(other)
 
     def __rmul__(self, other):
         return self.__mul__(other)
@@ -208,7 +303,7 @@ class SparseMatrix(object):
         repeated_h = tf.gather(h, col)
         if self.value is not None:
             repeated_h *= tf.expand_dims(self.value, axis=-1)
-        reduced_h = tf.math.unsorted_segment_sum(repeated_h, row, num_segments=self.shape[0])
+        reduced_h = tf.math.unsorted_segment_sum(repeated_h, row, num_segments=self._shape[0])
         return reduced_h
 
     def _matmul_sparse(self, other):
@@ -261,13 +356,13 @@ class SparseMatrix(object):
     def matmul_diag(self, diagonal):
         col = self.index[1]
         updated_edge_weight = self.value * tf.gather(diagonal, col)
-        return self.__class__(self.index, updated_edge_weight, self.shape)
+        return self.__class__(self.index, updated_edge_weight, self._shape)
 
     # self @ diagonal_matrix
     def rmatmul_diag(self, diagonal):
         row = self.index[0]
         updated_edge_weight = tf.gather(diagonal, row) * self.value
-        return self.__class__(self.index, updated_edge_weight, self.shape)
+        return self.__class__(self.index, updated_edge_weight, self._shape)
 
     # self @ other (other is a dense tensor or SparseAdj)
     def __matmul__(self, other):
@@ -291,7 +386,7 @@ class SparseMatrix(object):
         # if not edge_weight_is_tensor:
         #     masked_edge_weight = masked_edge_weight.numpy()
 
-        return self.__class__(masked_edge_index, masked_edge_weight, shape=self.shape)
+        return self.__class__(masked_edge_index, masked_edge_weight, shape=self._shape)
 
     def merge(self, other, merge_mode):
         """
@@ -318,7 +413,7 @@ class SparseMatrix(object):
         #     merged_value = merged_value.numpy()
 
         output_class = self.__class__ if issubclass(self.__class__, other.__class__) else other.__class__
-        merged_sparse_adj = output_class(merged_index, merged_value, shape=self.shape)
+        merged_sparse_adj = output_class(merged_index, merged_value, shape=self._shape)
 
         return merged_sparse_adj
 
@@ -346,12 +441,10 @@ class SparseMatrix(object):
 
     def dropout(self, drop_rate, training=False):
         if training and drop_rate > 0.0:
-            edge_weight = tf.compat.v2.nn.dropout(self.value, drop_rate)
+            output_value = tf.compat.v2.nn.dropout(self.value, drop_rate)
         else:
-            edge_weight = self.value
-        return self.__class__(self.index, value=edge_weight, shape=self.shape)
-
-
+            output_value = self.value
+        return self.with_value(output_value)
 
     # def add_self_loop(self, fill_weight=1.0):
     #     num_nodes = self.shape[0]
@@ -369,7 +462,7 @@ class SparseMatrix(object):
         return sparse_tensor_to_csr_sparse_matrix(
             indices=tf.cast(tf.transpose(self.index, [1, 0]), tf.int64),
             values=self.value,
-            dense_shape=self.shape
+            dense_shape=tf.cast(self._shape, dtype=tf.int64)
         )
 
     @classmethod
@@ -408,7 +501,7 @@ class SparseMatrix(object):
         sparse_tensor = tf.sparse.SparseTensor(
             indices=tf.cast(tf.transpose(self.index, [1, 0]), tf.int64),
             values=self.value,
-            dense_shape=self.shape
+            dense_shape=tf.cast(self._shape, tf.int64)
         )
         sparse_tensor = tf.sparse.reorder(sparse_tensor)
         return sparse_tensor
@@ -421,7 +514,7 @@ class SparseMatrix(object):
                "index => \n" \
                "{}\n" \
                "value => {}\n" \
-               "shape => {}".format(self.index, self.value, self.shape)
+               "shape => {}".format(self.index, self.value, self._shape)
 
     def __repr__(self):
         return self.__str__()
