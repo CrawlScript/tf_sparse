@@ -5,7 +5,7 @@ from setuptools import setup, find_packages
 setup(
     name="tf_sparse",
     python_requires='>3.5.0',
-    version="0.0.7",
+    version="0.0.8",
     author="Jun Hu",
     author_email="hujunxianligong@gmail.com",
     packages=find_packages(
@@ -35,9 +35,7 @@ setup(
         'tf2-cpu': ["tensorflow >= 2.4.0"],
         'tf2-gpu': ["tensorflow >= 2.4.0"]
     },
-    description="""
-        Efficient and Friendly Sparse Matrix Library for TensorFlow.
-    """,
+    description="Efficient and Friendly Sparse Matrix Library for TensorFlow.",
     license="GNU General Public License v3.0 (See LICENSE)",
     long_description=open("README.rst", "r", encoding="utf-8").read(),
     url="https://github.com/CrawlScript/tf_sparse"
