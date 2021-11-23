@@ -121,7 +121,8 @@ class SparseMatrix(CompositeTensor):
                 num_nodes = np.max(index) + 1
             shape = [num_nodes, num_nodes]
 
-        self._shape = tf.convert_to_tensor(shape)
+        self._shape = SparseMatrix.cast_shape(shape)
+        # self._shape = tf.convert_to_tensor(shape)
         self.shape = tensor_util.constant_value_as_shape(self._shape)
 
     @property
@@ -166,6 +167,10 @@ class SparseMatrix(CompositeTensor):
         # elif tf.is_tensor(value):
         #     value = tf.cast(value, tf.float32)
         # return value
+
+    @classmethod
+    def cast_shape(cls, shape):
+        return tf.cast(tf.convert_to_tensor(shape), tf.int32)
 
     @property
     def row(self):
