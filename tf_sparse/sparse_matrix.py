@@ -80,7 +80,6 @@ class SparseMatrixSpec(TypeSpec):
 
 
 class SparseMatrix(CompositeTensor):
-
     is_tensor_like = True
 
     # https://stackoverflow.com/questions/40252765/overriding-other-rmul-with-your-classs-mul
@@ -284,7 +283,7 @@ class SparseMatrix(CompositeTensor):
         elif isinstance(other, tf.sparse.SparseTensor):
             return self._mul_sparse_matrix(self.__class__.from_sparse_tensor(other))
         else:
-            if isinstance(other, numbers.Number) or len(other._shape) == 0:
+            if isinstance(other, numbers.Number) or len(other.shape) == 0:
                 return self._mul_scalar(other)
             else:
                 return self._mul_dense(other)
@@ -303,13 +302,16 @@ class SparseMatrix(CompositeTensor):
     def __rmul__(self, other):
         return self.__mul__(other)
 
+    # def _matmul_dense(self, h):
+    #     row, col = self.index[0], self.index[1]
+    #     repeated_h = tf.gather(h, col)
+    #     if self.value is not None:
+    #         repeated_h *= tf.expand_dims(self.value, axis=-1)
+    #     reduced_h = tf.math.unsorted_segment_sum(repeated_h, row, num_segments=self._shape[0])
+    #     return reduced_h
+
     def _matmul_dense(self, h):
-        row, col = self.index[0], self.index[1]
-        repeated_h = tf.gather(h, col)
-        if self.value is not None:
-            repeated_h *= tf.expand_dims(self.value, axis=-1)
-        reduced_h = tf.math.unsorted_segment_sum(repeated_h, row, num_segments=self._shape[0])
-        return reduced_h
+        return tf.sparse.sparse_dense_matmul(self.to_sparse_tensor(), h)
 
     def _matmul_sparse(self, other):
 
@@ -508,11 +510,13 @@ class SparseMatrix(CompositeTensor):
             values=self.value,
             dense_shape=tf.cast(self._shape, tf.int64)
         )
-        sparse_tensor = tf.sparse.reorder(sparse_tensor)
+        # sparse_tensor = tf.sparse.reorder(sparse_tensor)
         return sparse_tensor
 
     def to_dense(self):
-        return tf.sparse.to_dense(self.to_sparse_tensor())
+        sparse_tensor = self.to_sparse_tensor()
+        sparse_tensor = tf.sparse.reorder(sparse_tensor)
+        return tf.sparse.to_dense(sparse_tensor)
 
     def __str__(self):
         return "SparseMatrix: \n" \
