@@ -31,9 +31,7 @@ def _segment_softmax(data, segment_ids, num_segments):
     return score
 
 
-# @tf_export("SparseTensorSpec")
 class SparseMatrixSpec(TypeSpec):
-    """Type specification for a `tf.sparse.SparseTensor`."""
 
     __slots__ = ["_shape", "_dtype"]
 
@@ -70,13 +68,15 @@ class SparseMatrixSpec(TypeSpec):
         return [
             tensor_spec.TensorSpec([num_values, rank], dtypes.int64),
             tensor_spec.TensorSpec([num_values], self._dtype),
-            tensor_spec.TensorSpec([rank], dtypes.int64)]
+            tensor_spec.TensorSpec([rank], dtypes.int64),
+            tensor_spec.TensorSpec([], dtypes.bool)
+        ]
 
     def _to_components(self, value):
-        return [value.index, value.value, tf.convert_to_tensor(value._shape)]
+        return [value.index, value.value, tf.convert_to_tensor(value._shape), tf.convert_to_tensor(value.is_diag)]
 
     def _from_components(self, tensor_list):
-        return SparseMatrix(tensor_list[0], tensor_list[1], shape=tensor_list[2])
+        return SparseMatrix(tensor_list[0], tensor_list[1], shape=tensor_list[2], is_diag=tensor_list[3])
 
 
 class SparseMatrix(CompositeTensor):
@@ -85,7 +85,7 @@ class SparseMatrix(CompositeTensor):
     # https://stackoverflow.com/questions/40252765/overriding-other-rmul-with-your-classs-mul
     __array_priority__ = 10000
 
-    def __init__(self, index, value=None, shape=None, merge=False):
+    def __init__(self, index, value=None, shape=None, merge=False, is_diag=False):
         """
         Sparse Matrix for efficient computation.
         :param index:
@@ -123,6 +123,8 @@ class SparseMatrix(CompositeTensor):
         self._shape = SparseMatrix.cast_shape(shape)
         # self._shape = tf.convert_to_tensor(shape)
         self.shape = tensor_util.constant_value_as_shape(self._shape)
+
+        self.is_diag = tf.convert_to_tensor(is_diag)
 
     @property
     def shape_tensor(self):
@@ -183,17 +185,18 @@ class SparseMatrix(CompositeTensor):
         return self._shape[0]
 
     def with_value(self, new_value):
-        return self.__class__(self.index, new_value, shape=self._shape)
+        return self.__class__(self.index, new_value, shape=self._shape, is_diag=self.is_diag)
 
     def merge_duplicated_index(self):
         edge_index, [edge_weight] = merge_duplicated_sparse_index(self.index, [self.value], merge_modes=["sum"])
-        return self.__class__(edge_index, edge_weight, shape=self._shape)
+        return self.__class__(edge_index, edge_weight, shape=self._shape, is_diag=False)
 
     def negative(self):
         return self.__class__(
             index=self.index,
             value=-self.value,
-            shape=self._shape
+            shape=self._shape,
+            is_diag=self.is_diag
         )
 
     def __neg__(self):
@@ -202,10 +205,10 @@ class SparseMatrix(CompositeTensor):
     def transpose(self):
         row, col = self.index[0], self.index[1]
         transposed_edge_index = tf.stack([col, row], axis=0)
-        return self.__class__(transposed_edge_index, value=self.value, shape=[self._shape[1], self._shape[0]])
+        return self.__class__(transposed_edge_index, value=self.value, shape=[self._shape[1], self._shape[0]], is_diag=self.is_diag)
 
     def map_value(self, map_func):
-        return self.__class__(self.index, map_func(self.value), self._shape)
+        return self.__class__(self.index, map_func(self.value), self._shape, is_diag=self.is_diag)
 
     def _segment_reduce(self, segment_func, axis=None, keepdims=False):
 
@@ -315,6 +318,11 @@ class SparseMatrix(CompositeTensor):
 
     def _matmul_sparse(self, other):
 
+        if self.is_diag:
+            return other.rmatmul_diag(self.value)
+        elif other.is_diag:
+            return self.matmul_diag(other.value)
+
         warnings.warn("The operation \"SparseMatrix @ SparseMatrix\" does not support gradient computation.")
 
         csr_matrix_a = self._to_csr_sparse_matrix()
@@ -330,7 +338,7 @@ class SparseMatrix(CompositeTensor):
 
         output_class = self.__class__ if issubclass(self.__class__, other.__class__) else other.__class__
 
-        return output_class.from_sparse_tensor(sparse_tensor_c)
+        return output_class.from_sparse_tensor(sparse_tensor_c, merge=True)
 
     # sparse_adj @ other
     def matmul(self, other):
@@ -339,15 +347,20 @@ class SparseMatrix(CompositeTensor):
         else:
             return self._matmul_dense(other)
 
-    # h @ sparse_adj
-    def rmatmul_dense(self, h):
-        # h'
+    def _rmatmul_dense(self, h):
         transposed_h = tf.transpose(h, [1, 0])
         # sparse_adj' @ h'
         transpoed_output = self.transpose() @ transposed_h
         # h @ sparse_adj = (sparse_adj' @ h')'
         output = tf.transpose(transpoed_output, [1, 0])
         return output
+
+    # other @ sparse_adj
+    def rmatmul(self, other):
+        if isinstance(other, SparseMatrix):
+            return other._matmul_sparse(self)
+        else:
+            return self._rmatmul_dense(other)
 
     # # other_sparse_adj @ sparse_adj
     # def rmatmul_sparse(self, other):
@@ -376,8 +389,8 @@ class SparseMatrix(CompositeTensor):
         return self.matmul(other)
 
     # h @ self (h is a dense tensor)
-    def __rmatmul__(self, h):
-        return self.rmatmul_dense(h)
+    def __rmatmul__(self, other):
+        return self.rmatmul(other)
 
     def eliminate_zeros(self):
         # edge_index_is_tensor = tf.is_tensor(self.index)
@@ -483,7 +496,7 @@ class SparseMatrix(CompositeTensor):
         row = tf.range(0, num_rows, dtype=tf.int32)
         col = row
         index = tf.stack([row, col], axis=0)
-        return cls(index, diagonals, shape=[num_rows, num_rows])
+        return cls(index, diagonals, shape=[num_rows, num_rows], is_diag=True)
 
     @classmethod
     def eye(cls, num_rows):
@@ -496,11 +509,12 @@ class SparseMatrix(CompositeTensor):
         return cls.from_diagonals(diagonals)
 
     @classmethod
-    def from_sparse_tensor(cls, sparse_tensor: tf.sparse.SparseTensor):
+    def from_sparse_tensor(cls, sparse_tensor: tf.sparse.SparseTensor, merge=False):
         return cls(
             index=tf.transpose(sparse_tensor.indices, [1, 0]),
             value=sparse_tensor.values,
-            shape=sparse_tensor.dense_shape
+            shape=sparse_tensor.dense_shape,
+            merge=merge
         )
 
     def to_sparse_tensor(self):
@@ -523,7 +537,8 @@ class SparseMatrix(CompositeTensor):
                "index => \n" \
                "{}\n" \
                "value => {}\n" \
-               "shape => {}".format(self.index, self.value, self._shape)
+               "shape => {}\n" \
+               "is_diag => {}".format(self.index, self.value, self._shape, self.is_diag)
 
     def __repr__(self):
         return self.__str__()
