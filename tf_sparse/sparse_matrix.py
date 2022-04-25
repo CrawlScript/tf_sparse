@@ -373,15 +373,15 @@ class SparseMatrix(CompositeTensor):
     #     return output
 
     # self @ diagonal_matrix
-    def matmul_diag(self, diagonal):
+    def matmul_diag(self, diagonals):
         col = self.index[1]
-        updated_edge_weight = self.value * tf.gather(diagonal, col)
+        updated_edge_weight = self.value * tf.gather(diagonals, col)
         return self.__class__(self.index, updated_edge_weight, self._shape)
 
     # self @ diagonal_matrix
-    def rmatmul_diag(self, diagonal):
+    def rmatmul_diag(self, diagonals):
         row = self.index[0]
-        updated_edge_weight = tf.gather(diagonal, row) * self.value
+        updated_edge_weight = tf.gather(diagonals, row) * self.value
         return self.__class__(self.index, updated_edge_weight, self._shape)
 
     # self @ other (other is a dense tensor or SparseAdj)
@@ -391,6 +391,26 @@ class SparseMatrix(CompositeTensor):
     # h @ self (h is a dense tensor)
     def __rmatmul__(self, other):
         return self.rmatmul(other)
+
+    def add_diag(self, diagonals):
+        if tf.rank(diagonals) == 0:
+            diagonals = tf.fill([self.shape[0]], diagonals)
+
+        diagonal_matrix = self.__class__.from_diagonals(diagonals)
+
+        return diagonal_matrix + self
+
+    def remove_diag(self):
+        row, col = self.index[0], self.index[1]
+        mask = tf.not_equal(row, col)
+
+        masked_index = tf.boolean_mask(self.index, mask)
+        masked_value = tf.boolean_mask(self.value, mask)
+
+        return self.__class__(masked_index, masked_value, self._shape)
+
+    def set_diag(self, diagonals):
+        return self.remove_diag().add_diag(diagonals)
 
     def eliminate_zeros(self):
         # edge_index_is_tensor = tf.is_tensor(self.index)
