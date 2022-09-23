@@ -2,6 +2,7 @@
 
 import tensorflow as tf
 import numpy as np
+from scipy.sparse import csr_matrix
 from tensorflow import SparseTensorSpec
 from tensorflow.python.framework import tensor_shape, tensor_util
 from tensorflow.python.framework.composite_tensor import CompositeTensor
@@ -546,6 +547,17 @@ class SparseMatrix(CompositeTensor):
         )
         # sparse_tensor = tf.sparse.reorder(sparse_tensor)
         return sparse_tensor
+
+    @classmethod
+    def from_scipy(cls, scipy_sp_matrix, merge=False):
+        coo = scipy_sp_matrix.tocoo()
+
+        return cls(
+            index=np.stack([coo.row, coo.col], axis=0),
+            value=coo.data,
+            shape=coo.shape,
+            merge=merge
+        )
 
     def to_dense(self):
         sparse_tensor = self.to_sparse_tensor()
