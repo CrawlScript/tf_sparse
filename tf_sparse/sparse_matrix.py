@@ -33,7 +33,6 @@ def _segment_softmax(data, segment_ids, num_segments):
 
 
 class SparseMatrixSpec(TypeSpec):
-
     __slots__ = ["_shape", "_dtype"]
 
     value_type = property(lambda self: SparseMatrix)
@@ -206,7 +205,8 @@ class SparseMatrix(CompositeTensor):
     def transpose(self):
         row, col = self.index[0], self.index[1]
         transposed_edge_index = tf.stack([col, row], axis=0)
-        return self.__class__(transposed_edge_index, value=self.value, shape=[self._shape[1], self._shape[0]], is_diag=self.is_diag)
+        return self.__class__(transposed_edge_index, value=self.value, shape=[self._shape[1], self._shape[0]],
+                              is_diag=self.is_diag)
 
     def map_value(self, map_func):
         return self.__class__(self.index, map_func(self.value), self._shape, is_diag=self.is_diag)
@@ -319,27 +319,55 @@ class SparseMatrix(CompositeTensor):
 
     def _matmul_sparse(self, other):
 
-        if self.is_diag:
-            return other.rmatmul_diag(self.value)
-        elif other.is_diag:
-            return self.matmul_diag(other.value)
+        def csr_matmul():
+            warnings.warn("The operation \"SparseMatrix @ SparseMatrix\" does not support gradient computation.")
 
-        warnings.warn("The operation \"SparseMatrix @ SparseMatrix\" does not support gradient computation.")
+            csr_matrix_a = self._to_csr_sparse_matrix()
+            csr_matrix_b = other._to_csr_sparse_matrix()
 
-        csr_matrix_a = self._to_csr_sparse_matrix()
-        csr_matrix_b = other._to_csr_sparse_matrix()
+            csr_matrix_c = sparse_matrix_sparse_mat_mul(
+                a=csr_matrix_a, b=csr_matrix_b, type=self.value.dtype
+            )
 
-        csr_matrix_c = sparse_matrix_sparse_mat_mul(
-            a=csr_matrix_a, b=csr_matrix_b, type=self.value.dtype
+            sparse_tensor_c = csr_sparse_matrix_to_sparse_tensor(
+                csr_matrix_c, type=self.value.dtype
+            )
+
+            output_class = self.__class__ if issubclass(self.__class__, other.__class__) else other.__class__
+
+            return output_class.from_sparse_tensor(sparse_tensor_c, merge=True)
+
+        return tf.cond(
+            self.is_diag,
+            lambda: other.rmatmul_diag(self.value),
+            lambda: tf.cond(
+                other.is_diag,
+                lambda: self.matmul_diag(other.value),
+                csr_matmul
+            )
         )
 
-        sparse_tensor_c = csr_sparse_matrix_to_sparse_tensor(
-            csr_matrix_c, type=self.value.dtype
-        )
-
-        output_class = self.__class__ if issubclass(self.__class__, other.__class__) else other.__class__
-
-        return output_class.from_sparse_tensor(sparse_tensor_c, merge=True)
+        # if self.is_diag:
+        #     return other.rmatmul_diag(self.value)
+        # elif other.is_diag:
+        #     return self.matmul_diag(other.value)
+        #
+        # warnings.warn("The operation \"SparseMatrix @ SparseMatrix\" does not support gradient computation.")
+        #
+        # csr_matrix_a = self._to_csr_sparse_matrix()
+        # csr_matrix_b = other._to_csr_sparse_matrix()
+        #
+        # csr_matrix_c = sparse_matrix_sparse_mat_mul(
+        #     a=csr_matrix_a, b=csr_matrix_b, type=self.value.dtype
+        # )
+        #
+        # sparse_tensor_c = csr_sparse_matrix_to_sparse_tensor(
+        #     csr_matrix_c, type=self.value.dtype
+        # )
+        #
+        # output_class = self.__class__ if issubclass(self.__class__, other.__class__) else other.__class__
+        #
+        # return output_class.from_sparse_tensor(sparse_tensor_c, merge=True)
 
     # sparse_adj @ other
     def matmul(self, other):
