@@ -314,8 +314,22 @@ class SparseMatrix(CompositeTensor):
     #     reduced_h = tf.math.unsorted_segment_sum(repeated_h, row, num_segments=self._shape[0])
     #     return reduced_h
 
-    def _matmul_dense(self, h):
-        return tf.sparse.sparse_dense_matmul(self.to_sparse_tensor(), h)
+    def _matmul_dense(self, h, num_or_size_splits=None):
+        # return tf.sparse.sparse_dense_matmul(self.to_sparse_tensor(), h)
+
+        sparse_tensor = self.to_sparse_tensor()
+
+        # directly compute A @ H
+        if num_or_size_splits is None or num_or_size_splits == 1:
+            h = tf.sparse.sparse_dense_matmul(sparse_tensor, h)
+        # split H to compute A @ H for large sparse matrix
+        else:
+            split_h_list = tf.split(h, num_or_size_splits, axis=-1)
+            split_h_list = [tf.sparse.sparse_dense_matmul(sparse_tensor, split_h) for split_h in split_h_list]
+            h = tf.concat(split_h_list, axis=-1)
+
+        return h
+
 
     def _matmul_sparse(self, other):
 
@@ -370,26 +384,26 @@ class SparseMatrix(CompositeTensor):
         # return output_class.from_sparse_tensor(sparse_tensor_c, merge=True)
 
     # sparse_adj @ other
-    def matmul(self, other):
+    def matmul(self, other, num_or_size_splits=None):
         if isinstance(other, SparseMatrix):
             return self._matmul_sparse(other)
         else:
-            return self._matmul_dense(other)
+            return self._matmul_dense(other, num_or_size_splits=num_or_size_splits)
 
-    def _rmatmul_dense(self, h):
+    def _rmatmul_dense(self, h, num_or_size_splits=None):
         transposed_h = tf.transpose(h, [1, 0])
         # sparse_adj' @ h'
-        transpoed_output = self.transpose() @ transposed_h
+        transpoed_output = self.transpose().matmul(transposed_h, num_or_size_splits=num_or_size_splits)
         # h @ sparse_adj = (sparse_adj' @ h')'
         output = tf.transpose(transpoed_output, [1, 0])
         return output
 
     # other @ sparse_adj
-    def rmatmul(self, other):
+    def rmatmul(self, other, num_or_size_splits=None):
         if isinstance(other, SparseMatrix):
             return other._matmul_sparse(self)
         else:
-            return self._rmatmul_dense(other)
+            return self._rmatmul_dense(other, num_or_size_splits=num_or_size_splits)
 
     # # other_sparse_adj @ sparse_adj
     # def rmatmul_sparse(self, other):
