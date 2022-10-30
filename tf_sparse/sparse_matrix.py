@@ -424,7 +424,7 @@ class SparseMatrix(CompositeTensor):
     def add_diag(self, diagonals):
         if tf.rank(diagonals) == 0:
             # diagonals = tf.fill([self.shape[0]], diagonals)
-            diagonals = tf.fill([self._shape[0]], diagonals)
+            diagonals = tf.fill([self.shape_tensor[0]], diagonals)
 
         diagonal_matrix = self.__class__.from_diagonals(diagonals)
 
